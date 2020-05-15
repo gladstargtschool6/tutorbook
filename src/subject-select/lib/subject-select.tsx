@@ -76,6 +76,7 @@ export default class SubjectSelect extends React.Component<SubjectSelectProps> {
     this.openSuggestions = this.openSuggestions.bind(this);
     this.closeSuggestions = this.closeSuggestions.bind(this);
     this.updateInputValue = this.updateInputValue.bind(this);
+    this.updateInputLine = this.updateInputLine.bind(this);
   }
 
   /**
@@ -145,7 +146,7 @@ export default class SubjectSelect extends React.Component<SubjectSelectProps> {
   }
 
   /**
-   * We clear the timeout set by `this.closeSuggestions` to ensure that they
+   * We clear the timeout set by `this.closeSuggestions` to ensure that the
    * user doesn't get a blip where the subject select menu disappears and
    * reappears abruptly.
    * @see {@link https://bit.ly/2x9eM27}
@@ -204,14 +205,13 @@ export default class SubjectSelect extends React.Component<SubjectSelectProps> {
   }
 
   /**
-   * The function pushes <textarea> to the next line
-   * when its width is less than the width of its text content.
-   * To measure the width of the content the width of invisible <span> is used,
-   * to which the value of <textarea> is assigned.
+   * This function pushes `<textarea>` to the next line when it's width is less
+   * than the width of its text content.
+   *
+   * To measure the width of the content, the width of the invisible `<span>` is
+   * used (to which the value of `<textarea>` is then assigned).
    */
-  private changeTextareaLine = (
-    event: React.FormEvent<HTMLInputElement>
-  ): void => {
+  private updateInputLine(event: React.FormEvent<HTMLInputElement>): void {
     if (this.ghostElementRef.current) {
       this.ghostElementRef.current.innerText = event.currentTarget.value;
 
@@ -237,7 +237,7 @@ export default class SubjectSelect extends React.Component<SubjectSelectProps> {
         }));
       }
     }
-  };
+  }
 
   /**
    * @todo Allow the user to interact with the static content of the menu (i.e.
@@ -268,7 +268,7 @@ export default class SubjectSelect extends React.Component<SubjectSelectProps> {
             onFocus={this.openSuggestions}
             onBlur={this.closeSuggestions}
             onChange={this.updateInputValue}
-            onKeyUp={this.changeTextareaLine}
+            onKeyUp={this.updateInputLine}
             className={styles.textField}
           >
             {this.renderSubjectChipItems()}
