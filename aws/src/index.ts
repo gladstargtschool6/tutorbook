@@ -71,134 +71,6 @@ const client: SearchClient = algoliasearch(
 const index: SearchIndex = client.initIndex('default-appts');
 
 /**
- * Takes a user's actual email and returns their anonymized email (i.e. their
- * `<uid>-<appt>@mail.tutorbook.org` email address).
- *
- * If a user doesn't already exist, we create that user and add them to the
- * appointment's `attendees` field.
- *
- * @todo Get the user's name (from the original `From:` header) and use it when
- * creating new users.
- *
- * @todo Create the user's Firestore profile document as well (and populate it
- * with the default `User` data model values).
- */
-async function getAnonEmail(
-  realEmail: string,
-  apptDoc: DocumentSnapshot
-): Promise<string> {
-  if (whitelist.some((rgx: RegExp) => rgx.test(realEmail))) return realEmail;
-  let [err, user] = await to<UserRecord, FirebaseError>(
-    auth.getUserByEmail(realEmail)
-  );
-  if (err && err.code === 'auth/user-not-found') {
-    console.log(`Creating new user (${realEmail})...`);
-    [err, user] = await to<UserRecord, FirebaseError>(
-      auth.createUser({ email: realEmail })
-    );
-    if (err) throw new Error(`${err.name} creating user: ${err.message}`);
-  } else if (err) {
-    throw new Error(`${err.name} fetching user (${realEmail}): ${err.message}`);
-  }
-  const id: string = (user as UserRecord).uid;
-  const handle: string = uuid();
-  const attendees = (apptDoc.data() || {}).attendees as Attendee[];
-  const idx: number = attendees.findIndex((a: Attendee) => a.handle === handle);
-  if (idx < 0) {
-    const attendee: Attendee = { id, handle, roles: [] };
-    await apptDoc.ref.update({ attendees: [...attendees, attendee] });
-  }
-  return `${handle}@mail.tutorbook.org`;
-}
-
-/**
- * Takes a user's anonymized email (i.e. their `<handle>@mail.tutorbook.org`
- * email address) and returns their actual email.
- *
- * Each (all-lowercase) `handle` is defined when the appointment is created and
- * is unique to that appointment (so we can look up the appointment based on the
- * email handle).
- */
-async function getRealEmail(
-  anonEmail: string,
-  apptDoc: DocumentSnapshot
-): Promise<string> {
-  const handle: string = anonEmail.split('@')[0];
-  const creator: Attendee = (apptDoc.data() || {}).creator as Attendee;
-  const attendees: Attendee[] = (apptDoc.data() || {}).attendees as Attendee[];
-  const idx: number = attendees.findIndex((a: Attendee) => a.handle === handle);
-  const msg = `No attendee or creator with handle (${handle}).`;
-  if (idx < 0 && creator.handle !== handle) throw new Error(msg);
-  const [err, user] = await to<UserRecord, FirebaseError>(
-    auth.getUser(creator.handle === handle ? creator.id : attendees[idx].id)
-  );
-  if (err) {
-    throw new Error(`${err.name} fetching user (${anonEmail}): ${err.message}`);
-  } else if (!(user as UserRecord).email) {
-    throw new Error(`User (${(user as UserRecord).uid}) has no email.`);
-  } else {
-    return (user as UserRecord).email as string;
-  }
-}
-
-/**
- * An easy function to use and understand async replace. Enables you to use an
- * async replacement function.
- * @see {@link https://stackoverflow.com/a/48032528/10023158}
- */
-async function replaceAsync(
-  str: string,
-  regex: RegExp,
-  asyncFn: (match: string, ...args: any[]) => Promise<string>
-): Promise<string> {
-  const promises: Promise<string>[] = [];
-  str.replace(regex, (match: string, ...args: any[]) => {
-    promises.push(asyncFn(match, ...args));
-    return '';
-  });
-  const data: string[] = await Promise.all(promises);
-  return str.replace(regex, () => data.shift() as string);
-}
-
-/**
- * Replaces the email address in a given header with an anonymous email address.
- * @example
- * const orig = 'Reply-To: Nicholas Chiang <nicholas@tutorbook.org>'
- * const anon = replaceRealWithAnon(orig);
- * assert(anon === 'Reply-To: Nicholas Chiang <53GEmgLupal@mail.tutorbook.org');
- *
- * @todo Handle cases where the header looks like: `From: bob@tutorbook.org`
- * (instead of the expected `From: Bob <bob@tutorbook.org>`).
- */
-async function replaceRealWithAnon(
-  header: string,
-  apptDoc: DocumentSnapshot
-): Promise<string> {
-  if (header.indexOf('mail.tutorbook.org') >= 0) return header;
-  return replaceAsync(
-    header,
-    /<(.*)>/,
-    async (_, email: string) => `<${await getAnonEmail(email, apptDoc)}>`
-  );
-}
-
-/**
- * Get all possible appointments by filtering by user handle (each attendee is
- * assigned an all-lowercase handle unique to each appt).
- */
-async function getApptByHandles(handles: string[]): Promise<ApptSearchHit> {
-  const filters = handles.map((handle) => `handles:${handle}`).join(' AND ');
-  const [err, res] = await to<SearchResponse<ApptSearchHit>>(
-    index.search('', { filters }) as Promise<SearchResponse<ApptSearchHit>>
-  );
-  if (err) throw new Error(`${err.name} searching index: ${err.message}`);
-  const { hits: appts } = res as SearchResponse<ApptSearchHit>;
-  const msg = `Multiple (${filters}) appts: ${JSON.stringify(appts, null, 2)}`;
-  if (appts.length !== 1) throw new Error(msg);
-  return appts[0];
-}
-
-/**
  * An AWS Lambda function that is invoked every time we receive an email. This
  * function:
  * 1. Looks up the sender and recipient of the email in our Firestore database.
@@ -212,9 +84,17 @@ async function getApptByHandles(handles: string[]): Promise<ApptSearchHit> {
  */
 /* eslint-disable-next-line import/prefer-default-export */
 export function handler(event: MailEvent): void {
-  const notification: SESNotification = event.Records[0].ses;
+  
+  const { messageId, recipientEmails } = parseEvent(event);
+  const emailData: string = await getEmailData(messageId, bucketId);
 
-  console.log('Processing event:', JSON.stringify(notification, null, 2));
+  s3.getObject(
+    { Bucket: bucketId, Key: notification.mail.messageId },
+    (err: AWSError, data: S3.Types.GetObjectOutput) => {
+      void callback(err, data);
+    }
+  );
+
 
   async function callback(
     err: AWSError,
@@ -259,42 +139,6 @@ export function handler(event: MailEvent): void {
         })
       );
 
-      // Split the email into it's `headers` and `body` parts.
-      // @see {@link https://bit.ly/3iJx50F}
-      const splitRegex = /^((?:.+\r?\n)*)(\r?\n(?:.*\s+)*)/m;
-      const emailData: string = data.Body.toString();
-      const match: null | string[] = splitRegex.exec(emailData);
-      const body: string = match && match[2] ? match[2] : '';
-      let headers: string = match && match[1] ? match[1] : emailData;
-
-      // Remove the 'Return-Path', 'Sender', and 'Message-ID' headers.
-      headers = headers.replace(/^return-path:[\t ]?(.*)\r?\n/gim, '');
-      headers = headers.replace(/^sender:[\t ]?(.*)\r?\n/gim, '');
-      headers = headers.replace(/^message-id:[\t ]?(.*)\r?\n/gim, '');
-
-      // Remove all 'DKIM-Signature' headers to prevent triggering an
-      // "InvalidParameterValue: Duplicate header 'DKIM-Signature'" error.
-      // These signatures will likely be invalid anyways, since the 'From'
-      // header was modified.
-      headers = headers.replace(
-        /^dkim-signature:[\t ]?.*\r?\n(\s+.*\r?\n)*/gim,
-        ''
-      );
-
-      // Anonymize any (possibly) real email addresses.
-      await Promise.all(
-        [
-          /^reply-to:[\t ]?(.*(?:\r?\n\s+.*)*)/gim,
-          /^from:[\t ]?(.*(?:\r?\n\s+.*)*)/gim,
-          /^cc:[\t ]?(.*(?:\r?\n\s+.*)*)/gim,
-          /^bcc:[\t ]?(.*(?:\r?\n\s+.*)*)/gim,
-          /^to:[\t ]?(.*(?:\r?\n\s+.*)*)/gim,
-        ].map(async (regex: RegExp) => {
-          const replacer = (h: string) => replaceRealWithAnon(h, apptDoc);
-          headers = await replaceAsync(headers, regex, replacer);
-        })
-      );
-
       // Store the email (with all email addresses anonymized) in the appt's
       // `emails` Firestore subcollection.
       await mailDoc.ref.set({ ...notification.mail, raw: `${headers}${body}` });
@@ -320,11 +164,4 @@ export function handler(event: MailEvent): void {
       );
     }
   }
-
-  s3.getObject(
-    { Bucket: bucketId, Key: notification.mail.messageId },
-    (err: AWSError, data: S3.Types.GetObjectOutput) => {
-      void callback(err, data);
-    }
-  );
 }
