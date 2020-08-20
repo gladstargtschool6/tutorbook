@@ -1,4 +1,5 @@
 import { SyntheticEvent } from 'react';
+import { ChipSet, Chip } from '@rmwc/chip';
 import { Ripple } from '@rmwc/ripple';
 import cn from 'classnames';
 
@@ -37,8 +38,18 @@ export default function Result({
             <Avatar loading={loading} src={(user || {}).photo} />
           </div>
         )}
-        <div className={styles.name}>{user && user.name}</div>
-        <div className={styles.bio}>{user && user.bio}</div>
+        <div className={styles.rows}>
+          <div className={styles.name}>{user && user.name}</div>
+          <div className={styles.bio}>{user && user.bio}</div>
+          <div className={styles.subjectsScroller}>
+            <ChipSet className={styles.subjects}>
+              {!!user &&
+                user.mentoring.subjects.map((subject: string) => (
+                  <Chip className={styles.subject}>{subject}</Chip>
+                ))}
+            </ChipSet>
+          </div>
+        </div>
       </li>
     </Ripple>
   );
